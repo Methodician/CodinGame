@@ -175,16 +175,17 @@ class UnitTracker
     private void Add(Unit unit)
     {
         if (unit.Type == 0)
-        {
             Units.Add(
                 unit.Id,
                 new Knight(unit.Id, unit.Owner, unit.Location, unit.Type, unit.Health)
             );
-        }
+        else if (unit.Type == 2)
+            Units.Add(
+                unit.Id,
+                new Giant(unit.Id, unit.Owner, unit.Location, unit.Type, unit.Health)
+            );
         else
-        {
             Units.Add(unit.Id, unit);
-        }
     }
 
     public List<Unit> AllUnits()
@@ -202,17 +203,18 @@ class UnitTracker
         return UnitsOwnedBy(1);
     }
 
-    public List<Unit> FriendlyUnits()
-    {
-        return UnitsOwnedBy(0);
-    }
+    public List<Unit> FriendlyUnits => UnitsOwnedBy(0);
+
+
+
+    public List<T> FriendlyUnitsOfType<T>() where T : Unit => FriendlyUnits.OfType<T>().ToList();
 
     public List<Unit> UnitsByProximity(Location location)
     {
         return Units.Values.OrderBy(u => u.Location.Proximity(location)).ToList();
     }
 
-    public static List<Unit> UnitsByProximityTo(List<Unit> units, Location location)
+    public static List<T> UnitsByProximityTo<T>(List<T> units, Location location) where T : Unit
     {
         return units.OrderBy(u => u.Location.Proximity(location)).ToList();
     }
@@ -221,9 +223,13 @@ class UnitTracker
 class Knight : Unit
 {
     public Knight(int id, int owner, Location location, int type, int health)
-        : base(id, owner, location, type, health)
-    {
-    }
+        : base(id, owner, location, type, health) { }
+}
+
+class Giant : Unit
+{
+    public Giant(int id, int owner, Location location, int type, int health)
+        : base(id, owner, location, type, health) { }
 }
 
 class QueenUpdate
@@ -273,7 +279,11 @@ class Queen : Unit
 
     public void Move(Location target)
     {
-        Console.WriteLine($"MOVE {target.X} {target.Y}");
+        // Ensure that the target location is within the bounds of the game board
+        // Needs more nuance but should at least prevent aggressively pushing into the edge
+        var x = Math.Max(0, Math.Min(1920, target.X));
+        var y = Math.Max(0, Math.Min(1000, target.Y));
+        Console.WriteLine($"MOVE {x} {x}");
     }
 
     public void BuildMine(int siteId)
@@ -417,6 +427,9 @@ class ExploreStrategy : Strategy
 
     public Strategy GetNextStrategy(GameState state)
     {
+        // Note that starting HP varies widely, so starting strategy could be adjusted based on that
+        // Rush/defend if start low, turtle if start high
+        // May be as simple as adjusting the savings targets
         var ts = queen.GetTouchedSite(state.SiteTracker);
         if (ts != null)
         {
@@ -461,15 +474,24 @@ class ExploreStrategy : Strategy
     }
 }
 
+enum SiteCapturePreference {
+    GIANT,
+    ARCHER,
+    KNIGHT,
+    TOWER,
+    MINE
+}
 
 class CaptureSiteStrategy : Strategy {
     private Queen queen;
     private Site touchedSite;
     private GameState state;
+    private SiteCapturePreference capturePreference;
     public CaptureSiteStrategy(Queen queen, Site touchedSite, GameState state) {
         this.queen = queen;
         this.touchedSite = touchedSite;
         this.state = state;
+        this.capturePreference = GetSiteCapturePreference();
     }
 
     public Strategy GetNextStrategy(GameState state) {
@@ -482,21 +504,49 @@ class CaptureSiteStrategy : Strategy {
         }
     }
 
-    public void Execute(GameState state) {
+    public void Execute(GameState state)
+    {
         Console.Error.Write("Capturing Site");
-        if (shouldBuildArcherBarracks) {
-            Console.Error.WriteLine("... Building ARCHER BARRACKS");
-            queen.BuildBarracks(touchedSite.Id, "ARCHER");
-        } else if (shouldBuildKnightBarracks) {
-            Console.Error.WriteLine("... Building KNIGHT BARRACKS");
-            queen.BuildBarracks(touchedSite.Id, "KNIGHT");
-        } else if (shouldExpandTower | shouldBuildTower) {
-            Console.Error.WriteLine("... Building TOWER");
-            queen.BuildTower(touchedSite.Id);
-        } else {
-            Console.Error.WriteLine("... Building MINE");
-            queen.BuildMine(touchedSite.Id);
+        switch(capturePreference)
+        {
+            case SiteCapturePreference.GIANT:
+                Console.Error.WriteLine("... Building GIANT BARRACKS");
+                queen.BuildBarracks(touchedSite.Id, "GIANT");
+                break;
+            case SiteCapturePreference.ARCHER:
+                Console.Error.WriteLine("... Building ARCHER BARRACKS");
+                queen.BuildBarracks(touchedSite.Id, "ARCHER");
+                break;
+            case SiteCapturePreference.KNIGHT:
+                Console.Error.WriteLine("... Building KNIGHT BARRACKS");
+                queen.BuildBarracks(touchedSite.Id, "KNIGHT");
+                break;
+            case SiteCapturePreference.TOWER:
+                Console.Error.WriteLine("... Building TOWER");
+                queen.BuildTower(touchedSite.Id);
+                break;
+            case SiteCapturePreference.MINE:
+                Console.Error.WriteLine("... Building MINE");
+                queen.BuildMine(touchedSite.Id);
+                break;
         }
+    }
+
+    private SiteCapturePreference GetSiteCapturePreference() {
+        // Replicate logic from Execute method above
+        if (state.NeededBarracksType == BarracksType.GIANT & state.SiteTracker.FriendlyGiantBarracks.Count() == 0)
+            return SiteCapturePreference.GIANT;
+        else if (state.NeededBarracksType == BarracksType.ARCHER & state.SiteTracker.FriendlyArcherBarracks.Count() == 0)
+            return SiteCapturePreference.ARCHER;
+        else if (state.NeededBarracksType == BarracksType.KNIGHT & state.SiteTracker.FriendlyKnightBarracks.Count() == 0)
+            return SiteCapturePreference.KNIGHT;
+        else if (shouldExpandTower | shouldBuildTower)
+            return SiteCapturePreference.TOWER;
+        else if (shouldBuildGoldMine())
+            return SiteCapturePreference.MINE;
+        else
+            return SiteCapturePreference.TOWER;
+
     }
 
     private bool shouldBuildTower => queen.IsUnderAttack(300, 5);
@@ -504,16 +554,20 @@ class CaptureSiteStrategy : Strategy {
     private bool shouldExpandTower =>
         touchedSite.IsTower() & touchedSite.Param1 < touchedSite.Param2;
 
-
-    private bool shouldBuildKnightBarracks =>
-        state.NeededBarracksType == BarracksType.KNIGHT;
-
-
-    private bool shouldBuildArcherBarracks =>
-        state.NeededBarracksType == BarracksType.ARCHER;
+    private bool shouldBuildGoldMine()
+    {
+        var hasEnoughGold = touchedSite.GoldRemaining > 40;
+        var nearestKnight = UnitTracker.UnitsByProximityTo(state.EnemyKnights, touchedSite.Location).FirstOrDefault();
+        if (nearestKnight == null)
+            return hasEnoughGold;
+        var distanceToNearestKnight = nearestKnight.Location.Proximity(touchedSite.Location);
+        if (distanceToNearestKnight > 400)
+            return hasEnoughGold;
+        return false;
+    }
 
     private bool shouldExpandGoldMine =>
-        !shouldBuildTower & !shouldBuildKnightBarracks & !shouldBuildArcherBarracks
+        capturePreference == SiteCapturePreference.MINE
         // Since we can assume we just built it, we can just check the MaxMineSize against a presumed current size of 1
         & touchedSite.GoldRemaining > 110 & touchedSite.MaxMineSize > 1;
 }
@@ -535,62 +589,6 @@ class ExpandTowerStrategy : Strategy {
     public void Execute(GameState state) {
         Console.Error.WriteLine("Expanding Tower");
         queen.BuildTower(site.Id);
-    }
-}
-
-class FleeStrategy : Strategy
-{
-    private Queen queen;
-
-    public FleeStrategy(Queen queen)
-    {
-        this.queen = queen;
-    }
-
-    public Strategy GetNextStrategy(GameState state)
-    {
-        if (queen.IsUnderAttack(120, 4))
-        {
-            return new FleeStrategy(queen);
-        }
-        return new ExploreStrategy(queen);
-    }
-
-    public void Execute(GameState state)
-    {
-        Console.Error.WriteLine("Fleeing");
-        void moveAwayFromHorde(int hordeProximityThreshold, int attackerCountThreshold)
-        {
-            if (queen.IsUnderAttack(hordeProximityThreshold, attackerCountThreshold))
-            {
-                Console.Error.Write("... Away from Horde");
-                var awayFromHorde = queen.Senses.AwayFromNearbyHordes(hordeProximityThreshold);
-                queen.Move(awayFromHorde.B);
-            } else {
-                Console.Error.Write("... Towards earest Safe Site");
-                var nearestSafeBuildSite = queen.Senses.NearestUnownedSafeBuildSite();
-                queen.Move(nearestSafeBuildSite.Location);
-            }
-        }
-        var site = queen.GetTouchedSite(state.SiteTracker);
-        if (site != null) {
-            if (site.IsFriendly() & site.IsGoldMine() & site.GoldRemaining < 100) {
-                Console.Error.Write("... actually building tower over mine");
-                queen.BuildTower(site.Id);
-            } else if (!site.IsTower() & !site.IsGoldMine()) {
-                Console.Error.Write("... actually building a new tower");
-                queen.BuildTower(site.Id);
-            } else if (!site.IsFriendly()) {
-                Console.Error.Write("... actually building a new tower");
-                queen.BuildTower(site.Id);
-            } else {
-                Console.Error.Write("... actually really far");
-                moveAwayFromHorde(400, 4);
-            }
-        } else {  
-            Console.Error.Write("... actually really far");
-            moveAwayFromHorde(100, 5);
-        }
     }
 }
 
@@ -655,6 +653,63 @@ class BuildBarracksStrategy : Strategy {
     public void Execute(GameState state) {
         Console.Error.WriteLine("Building Barracks");
         queen.BuildBarracks(site.Id, "KNIGHT");
+    }
+}
+
+// Needs work...
+class FleeStrategy : Strategy
+{
+    private Queen queen;
+
+    public FleeStrategy(Queen queen)
+    {
+        this.queen = queen;
+    }
+
+    public Strategy GetNextStrategy(GameState state)
+    {
+        if (queen.IsUnderAttack(120, 4))
+        {
+            return new FleeStrategy(queen);
+        }
+        return new ExploreStrategy(queen);
+    }
+
+    public void Execute(GameState state)
+    {
+        Console.Error.WriteLine("Fleeing");
+        void moveAwayFromHorde(int hordeProximityThreshold, int attackerCountThreshold)
+        {
+            if (queen.IsUnderAttack(hordeProximityThreshold, attackerCountThreshold))
+            {
+                Console.Error.Write("... Away from Horde");
+                var awayFromHorde = queen.Senses.AwayFromNearbyHordes(hordeProximityThreshold);
+                queen.Move(awayFromHorde.B);
+            } else {
+                Console.Error.Write("... Towards earest Safe Site");
+                var nearestSafeBuildSite = queen.Senses.NearestUnownedSafeBuildSite();
+                queen.Move(nearestSafeBuildSite.Location);
+            }
+        }
+        var site = queen.GetTouchedSite(state.SiteTracker);
+        if (site != null) {
+            if (site.IsFriendly() & site.IsGoldMine() & site.GoldRemaining < 100) {
+                Console.Error.Write("... actually building tower over mine");
+                queen.BuildTower(site.Id);
+            } else if (!site.IsTower() & !site.IsGoldMine()) {
+                Console.Error.Write("... actually building a new tower");
+                queen.BuildTower(site.Id);
+            } else if (!site.IsFriendly()) {
+                Console.Error.Write("... actually building a new tower");
+                queen.BuildTower(site.Id);
+            } else {
+                Console.Error.Write("... actually really far");
+                moveAwayFromHorde(400, 4);
+            }
+        } else {  
+            Console.Error.Write("... actually really far");
+            moveAwayFromHorde(100, 5);
+        }
     }
 }
 
@@ -907,6 +962,9 @@ class SiteTracker
 
         return Sites.Values.Where(s => {
 
+            if (s is Tower)
+                return false;
+
             foreach (var t in hostileTowers)
             {
                 if (s.Location.Proximity(t.Location) <= t.AttackRange)
@@ -941,6 +999,14 @@ class SiteTracker
     }
 }
 
+
+enum NeededUnitTypes
+{
+    KNIGHT,
+    ARCHER,
+    GIANT,
+    NONE
+}
 class Trainer
 {
     private GameState state;
@@ -951,14 +1017,76 @@ class Trainer
     }
 
     // Consider replacing all of these with a single method to decide what to prioritize building
-    public bool AreArchersNeeded => state.EnemyKnightBarracks.Count() > 0;
-    public bool AreKnightsNeeded => !state.ShouldSave;
+    public bool AreArchersNeeded =>
+        (state.EnemyKnightBarracks.Count() > 0 & state.SiteTracker.FriendlyArcherBarracks.Count() == 0)
+        || (state.EnemyKnights.Count() > 4);
 
+    public bool AreGiantsNeeded => state.SiteTracker.HostileTowers.Count() > 3;
+
+    // public void TakeTurn(Location queenLocation, Location enemyLocation) {
+    public void TakeTurn(Location queenLocation)
+    {
+        var neededType = NeededUnitType();
+        switch (neededType)
+        {
+            case NeededUnitTypes.ARCHER:
+                TrainArchers(queenLocation);
+                break;
+            case NeededUnitTypes.GIANT:
+                TrainGiants(queenLocation);
+                break;
+            case NeededUnitTypes.KNIGHT:
+                TrainKnights();
+                break;
+            case NeededUnitTypes.NONE:
+                Console.WriteLine("TRAIN");
+                break;
+        }
+    }
+
+    public NeededUnitTypes NeededUnitType() {
+        if (
+            state.SiteTracker.HostileTowers.Count() > 3
+            & state.UnitTracker.FriendlyUnitsOfType<Giant>().Count() < 3
+        )
+            return NeededUnitTypes.GIANT;
+        else if (state.EnemyKnightBarracks.Count() > 0 & state.SiteTracker.FriendlyArcherBarracks.Count() == 0)
+            return NeededUnitTypes.ARCHER;
+        else if (state.EnemyKnights.Count() > 3)
+            return NeededUnitTypes.ARCHER;
+        else if (!state.ShouldSave)
+            return NeededUnitTypes.KNIGHT;
+        else
+            return NeededUnitTypes.NONE;
+        
+    }
+
+    private void TrainGiants(Location queenLocation)
+    {
+        if (state.SiteTracker.FriendlyGiantBarracks.Count() == 0)
+        {
+            state.NeededBarracksType = BarracksType.GIANT;
+            if (!state.ShouldSave)
+                TrainKnights();
+            else
+                Console.WriteLine("TRAIN");
+        }
+        else
+        {
+            state.NeededBarracksType = null;
+            // Should consider strategies to build barracks in different locations
+            var optimalBarracks = SiteTracker.SitesByProximityTo(state.SiteTracker.FriendlyGiantBarracks, queenLocation).First();
+            Console.WriteLine($"TRAIN {optimalBarracks.Id}");
+        }
+    }
     public void TrainArchers(Location queenLocation) {
         if (state.SiteTracker.FriendlyArcherBarracks.Count() == 0)
         {
             state.NeededBarracksType = BarracksType.ARCHER;
-            Console.WriteLine("TRAIN");
+            if (!state.ShouldSave)
+                TrainKnights();
+            else
+                Console.WriteLine("TRAIN");
         }
         else
         {
@@ -985,28 +1113,6 @@ class Trainer
         }
     }
 
-
-    // public void TakeTurn(Location queenLocation, Location enemyLocation) {
-    public void TakeTurn(Location queenLocation) {
-        if (state.ShouldSave)
-        {
-            Console.WriteLine("TRAIN");
-        }
-        else
-        {
-            if (AreArchersNeeded)
-            {
-                TrainArchers(queenLocation);
-            }
-            else if (AreKnightsNeeded) {
-                TrainKnights();
-            }
-            else
-            {
-                Console.WriteLine("TRAIN");
-            }
-        }
-    }
 }
 
 
@@ -1015,6 +1121,8 @@ class GameState
     public int Gold { get; private set; }
     public bool ShouldSave { get; private set; } = true;
     public BarracksType? NeededBarracksType { get; set; }
+
+    // Could be more nuanced and adjustable, or sometimes flat out ignored
     readonly int TargetSavings = 140;
     readonly int MinSavings = 20;
 
@@ -1030,6 +1138,8 @@ class GameState
     }
 
     public List<Knight> EnemyKnights => UnitTracker.EnemyUnits().OfType<Knight>().ToList();
+
+    public List<Giant> EnemyGiants => UnitTracker.EnemyUnits().OfType<Giant>().ToList();
     
     public List<Barracks> EnemyBarracks => SiteTracker.HostileSites.OfType<Barracks>().ToList();
 
