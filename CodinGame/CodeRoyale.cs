@@ -281,9 +281,14 @@ class Queen : Unit
     {
         // Ensure that the target location is within the bounds of the game board
         // Needs more nuance but should at least prevent aggressively pushing into the edge
-        var x = Math.Max(0, Math.Min(1920, target.X));
-        var y = Math.Max(0, Math.Min(1000, target.Y));
-        Console.WriteLine($"MOVE {x} {x}");
+        Console.Error.WriteLine($"Target: {target.X}, {target.Y}");
+        var xInset = 140;
+        var yInset = 115;
+        var x = Math.Max(xInset, Math.Min(1920 - xInset, target.X));
+        var y = Math.Max(yInset, Math.Min(1000 - yInset, target.Y));
+        Console.WriteLine($"MOVE {x} {y}");
+
+        //  Console.WriteLine($"MOVE {target.X} {target.Y}");
     }
 
     public void BuildMine(int siteId)
@@ -324,10 +329,8 @@ class Queen : Unit
         }
     }
 
-    public bool IsUnderAttack(int proximityThreshold, int attackerCount)
-    {
-        return Senses.IsNearEnemyKnights(proximityThreshold, attackerCount);
-    }
+    public bool IsUnderAttack(int proximityThreshold, int attackerCountThreshold, bool shouldScale = true) =>
+        Senses.IsNearEnemyKnights(proximityThreshold, attackerCountThreshold, shouldScale);
 }
 
 class QueenSenses
@@ -349,11 +352,25 @@ class QueenSenses
         return nearbyKnights.ToList();
     }
 
-    public bool IsNearEnemyKnights(int proximityThreshold, int attackerCountThreshold)
+    public bool IsNearEnemyKnights(int proximityThreshold, int attackerCountThreshold, bool shouldScale)
     {
-        var nearbyKnights = state.UnitTracker.EnemyUnits().OfType<Knight>().Where(k => k.Location.Proximity(queen.Location) < proximityThreshold);
-        return nearbyKnights.Count() >= attackerCountThreshold;
+
+        // ChatGPT original suggestion
+        // int scaledProximityThreshold = proximityThreshold + (int)(queen.Health * 0.1);
+        // int scaledAttackerCountThreshold = attackerCountThreshold + (int)(queen.Health * 0.05);
+        double queenHealthPercentage = queen.Health / 100.0;
+        int scaledProximityThreshold = shouldScale ? proximityThreshold + 80 - (int)(queenHealthPercentage * proximityThreshold) : proximityThreshold;
+        int scaledAttackerCountThreshold = shouldScale ? (int)(queenHealthPercentage * attackerCountThreshold) : attackerCountThreshold;
+        Console.Error.WriteLine($"Queen Health: {queen.Health}, SPThreshold: {scaledProximityThreshold}, SACThreshold: {scaledAttackerCountThreshold}");
+        var nearbyKnights = state.UnitTracker.EnemyUnits().OfType<Knight>().Where(k => k.Location.Proximity(queen.Location) < scaledProximityThreshold);
+        return nearbyKnights.Count() >= scaledAttackerCountThreshold;
     }
+    // public bool IsNearEnemyKnights(int proximityThreshold, int attackerCountThreshold)
+    // {
+        
+    //     var nearbyKnights = state.UnitTracker.EnemyUnits().OfType<Knight>().Where(k => k.Location.Proximity(queen.Location) < proximityThreshold);
+    //     return nearbyKnights.Count() >= attackerCountThreshold;
+    // }
 
     public Location AverageEnemyKnightLocationWithin(int proximityThreshold)
     {
@@ -440,7 +457,7 @@ class ExploreStrategy : Strategy
                 // it's a friendly site and we're done. Explore some more.
                 return this;
             }
-        } else if (queen.IsUnderAttack(160, 7))
+        } else if (queen.IsUnderAttack(1100, 25))
         {
             return new FleeStrategy(queen);
         } else {
@@ -454,7 +471,7 @@ class ExploreStrategy : Strategy
         var touchedSite = queen.GetTouchedSite(state.SiteTracker);
         if (touchedSite != null) {
             if (!touchedSite.IsFriendly()) {
-                if(queen.IsUnderAttack(400, 4)) {
+                if(queen.IsUnderAttack(2000, 32)) {
                     queen.BuildTower(touchedSite.Id);
                 } else {
                     queen.BuildMine(touchedSite.Id);
@@ -498,7 +515,7 @@ class CaptureSiteStrategy : Strategy {
         if (shouldExpandTower) {
             return new ExpandTowerStrategy(queen, touchedSite);
         } else if (shouldExpandGoldMine) {
-            return new ExpandMineStrategy(queen, touchedSite);
+            return new ExpandMineStrategy(queen, touchedSite, state);
         } else {
             return new ExploreStrategy(queen);
         }
@@ -549,10 +566,10 @@ class CaptureSiteStrategy : Strategy {
 
     }
 
-    private bool shouldBuildTower => queen.IsUnderAttack(300, 5);
+    private bool shouldBuildTower => queen.IsUnderAttack(1200, 16);
 
     private bool shouldExpandTower =>
-        touchedSite.IsTower() & touchedSite.Param1 < touchedSite.Param2;
+        touchedSite.IsTower() & touchedSite.IsFriendly() & touchedSite.Param1 < touchedSite.Param2;
 
     private bool shouldBuildGoldMine()
     {
@@ -581,7 +598,7 @@ class ExpandTowerStrategy : Strategy {
     }
 
     public Strategy GetNextStrategy(GameState state) {
-        if (site.Param1 < site.Param2)
+        if (site.Param1 < site.Param2 & site.IsFriendly() & site.IsTower())
             return new ExpandTowerStrategy(queen, site);
         return new ExploreStrategy(queen);
     }
@@ -619,22 +636,38 @@ class ExpandMineStrategy : Strategy {
     private Queen queen;
     private Site mine;
 
-    public ExpandMineStrategy(Queen queen, Site mine) {
+    private GameState state;
+
+    public ExpandMineStrategy(Queen queen, Site mine, GameState state) {
         this.queen = queen;
         this.mine = mine;
+        this.state = state;
     }
 
     public Strategy GetNextStrategy(GameState state) {
         var goldMine = new GoldMine(state.SiteTracker.Get(mine.Id));
-        Console.Error.WriteLine($"Mine Size: {goldMine.Size} / {goldMine.MaxMineSize}");
-        if (goldMine.Size < goldMine.MaxMineSize & !queen.IsUnderAttack(100, 1))
-            return new ExpandMineStrategy(queen, mine);
+        if (shouldKeepExpanding())
+            return new ExpandMineStrategy(queen, mine, state);
         return new ExploreStrategy(queen);
     }
 
     public void Execute(GameState state) {
         Console.Error.WriteLine("Expanding Mine");
         queen.BuildMine(mine.Id);
+    }
+
+    private bool shouldKeepExpanding()
+    {
+        var goldMine = new GoldMine(state.SiteTracker.Get(mine.Id));
+        var hasEnoughGold = goldMine.GoldRemaining > 40;
+        var isBelowMax = goldMine.Size < goldMine.MaxMineSize;
+        var nearestKnight = UnitTracker.UnitsByProximityTo(state.EnemyKnights, goldMine.Location).FirstOrDefault();
+        if (nearestKnight == null)
+            return hasEnoughGold & isBelowMax;
+        var distanceToNearestKnight = nearestKnight.Location.Proximity(goldMine.Location);
+        if (distanceToNearestKnight > 400)
+            return hasEnoughGold & isBelowMax;
+        return false;
     }
 }
 
@@ -668,7 +701,7 @@ class FleeStrategy : Strategy
 
     public Strategy GetNextStrategy(GameState state)
     {
-        if (queen.IsUnderAttack(120, 4))
+        if (queen.IsUnderAttack(900, 15))
         {
             return new FleeStrategy(queen);
         }
@@ -704,11 +737,11 @@ class FleeStrategy : Strategy
                 queen.BuildTower(site.Id);
             } else {
                 Console.Error.Write("... actually really far");
-                moveAwayFromHorde(400, 4);
+                moveAwayFromHorde(800, 12);
             }
         } else {  
             Console.Error.Write("... actually really far");
-            moveAwayFromHorde(100, 5);
+            moveAwayFromHorde(600, 12);
         }
     }
 }
